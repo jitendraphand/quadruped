@@ -21,11 +21,19 @@ This is a ROS 2 Jazzy workspace to control a Nova Mini Spot quadruped robot usin
 - Connect your servo power supply directly to the PCA9685 `V+` and `GND` screw terminals. **Do NOT power the servos directly from the Raspberry Pi** as this will cause brownouts.
 
 ### Servos to PCA9685
-Connect the 12 servos to channels 0 through 11 on the PCA9685 board.
-- Channels 0, 1, 2: Leg 1 (Hip, Knee, Ankle)
-- Channels 3, 4, 5: Leg 2
-- Channels 6, 7, 8: Leg 3
-- Channels 9, 10, 11: Leg 4
+Connect the 12 servos to the PCA9685 board based on the motor types.
+
+Each leg has three motors:
+- **Motor A (Hip Abduction & Adduction):** Moves leg sideways. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg (allowed range +/- 67.5 deg).
+- **Motor B (Hip Flexion/Extension):** Moves leg forward/back. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg (allowed range +/- 67.5 deg).
+- **Motor C (Knee Bending):** Rotation angle 180 deg (pulse 900-2100 µs). Perfectly aligned at 90 deg (allowed range +/- 60 deg).
+
+**PCA9685 Channel Mapping:**
+- **Front Left Leg:** Motor A (0), Motor B (1), Motor C (2)
+- **Front Right Leg:** Motor A (4), Motor B (5), Motor C (6)
+- **Back/Rear Left Leg:** Motor A (8), Motor B (9), Motor C (10)
+- **Back/Rear Right Leg:** Motor A (12), Motor B (13), Motor C (14)
+
 *Note: Make sure the yellow/white signal wire faces the inner row (PWM), red faces the middle (V+), and brown/black faces the outer row (GND).*
 
 ### USB Microphone
@@ -92,8 +100,9 @@ ros2 launch nova_spot_control nova_spot_launch.py
 
 ### Usage
 Once launched, the microphone will continuously listen. Speak one of the following commands clearly:
-- **"Sit"**: The robot lowers its body close to the ground.
-- **"Stand"**: The robot lifts its body upwards into a standing position.
-- **"Walk"**: The robot will walk 10 steps forward (requires standing first).
+- **"Sit"**: The robot adjusts its base joints from the baseline alignment to sit down.
+- **"Stand"**: The robot assumes its perfectly aligned baseline position: Motor A at 135°, Motor B at 135°, and Motor C at 90°.
+- **"Walk"**: The robot will walk 10 steps forward using a basic gait built around the aligned baseline (requires standing first).
+- **"Turn right"**: The robot rotates 90 degrees about the vertical axis (requires standing first).
 
 While a command is executing, the microphone goes inactive to prevent self-interruption. Once the movement completes and after a short buffer time, the robot will resume listening for new commands.
