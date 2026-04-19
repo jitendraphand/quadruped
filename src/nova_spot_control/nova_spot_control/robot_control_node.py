@@ -5,7 +5,10 @@ import time
 import board
 import busio
 from adafruit_pca9685 import PCA9685
-from adafruit_motor import servo
+import json
+import os
+
+CALIBRATION_FILE = os.path.expanduser('~/.nova_spot_calibration.json')
 
 class RobotControlNode(Node):
     def __init__(self):
@@ -34,32 +37,15 @@ class RobotControlNode(Node):
             # Back Left:   A(8),  B(9),  C(10)
             # Back Right:  A(12), B(13), C(14)
 
-            # Group them to initialize correctly
-            motor_a_channels = [0, 4, 8, 12]
-            motor_b_channels = [1, 5, 9, 13]
-            motor_c_channels = [2, 6, 10, 14]
-
-            self.servos = {}
-            for channel in motor_a_channels + motor_b_channels:
-                self.servos[channel] = servo.Servo(
-                    self.pca.channels[channel],
-                    actuation_range=270,
-                    min_pulse=500,
-                    max_pulse=2500
-                )
-
-            for channel in motor_c_channels:
-                self.servos[channel] = servo.Servo(
-                    self.pca.channels[channel],
-                    actuation_range=180,
-                    min_pulse=900,
-                    max_pulse=2100
-                )
+            # Load calibrations or fallback to 1500us
+            self.calibrated_pulses = {str(c): 1500 for c in [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]}
+            self.load_calibration()
+            self.hardware_initialized = True
 
             self.get_logger().info("Hardware initialized successfully.")
         except Exception as e:
             self.get_logger().error(f"Failed to initialize hardware: {e}")
-            self.servos = None
+            self.hardware_initialized = False
 
         # State tracking
         self.current_state = "stand"  # Assume starting standing or seated, need to track to avoid redundant moves
@@ -84,38 +70,58 @@ class RobotControlNode(Node):
         # Send ready status back to resume listening
         self.publish_ready_status()
 
+    def load_calibration(self):
+        if os.path.exists(CALIBRATION_FILE):
+            try:
+                with open(CALIBRATION_FILE, 'r') as f:
+                    saved = json.load(f)
+                    for k, v in saved.items():
+                        if k in self.calibrated_pulses:
+                            self.calibrated_pulses[k] = v
+                self.get_logger().info(f"Loaded calibrated pulses from {CALIBRATION_FILE}")
+            except Exception as e:
+                self.get_logger().error(f"Failed to load calibration: {e}")
+        else:
+            self.get_logger().info("No calibration file found. Using default 1500us for all.")
+
     def publish_ready_status(self):
         msg = Bool()
         msg.data = True
         self.status_publisher.publish(msg)
         self.get_logger().info("Finished executing. Ready for next command.")
 
-    def clamp_angle(self, channel, angle):
-        """Clamp angle based on motor allowed ranges."""
-        if channel in [0, 4, 8, 12]:  # Motor A
-            return max(67.5, min(202.5, angle))
-        elif channel in [1, 5, 9, 13]:  # Motor B
-            return max(67.5, min(202.5, angle))
-        elif channel in [2, 6, 10, 14]:  # Motor C
-            return max(30.0, min(150.0, angle))
-        return angle
+    def pulse_to_duty(self, pulse_us):
+        # 50Hz = 20,000 us period.
+        # The adafruit_pca9685 library expects a 16-bit duty cycle (0-65535).
+        return int((pulse_us * 65535) / 20000)
 
-    def set_servos(self, angle_dict):
+    def clamp_pulse(self, channel, pulse_us):
+        """Clamp pulse based on motor allowed physical ranges."""
+        if channel in [0, 4, 8, 12]:  # Motor A: 1000 - 2000 us (roughly +/- 67.5 deg from center)
+            return max(1000, min(2000, pulse_us))
+        elif channel in [1, 5, 9, 13]:  # Motor B: 1000 - 2000 us
+            return max(1000, min(2000, pulse_us))
+        elif channel in [2, 6, 10, 14]:  # Motor C: 1100 - 1900 us (roughly +/- 60 deg from center)
+            return max(1100, min(1900, pulse_us))
+        return pulse_us
+
+    def set_servos(self, offset_dict):
         """
-        Set multiple servos at once using a dictionary of {channel: angle}.
-        Angles will be clamped to safe ranges.
+        Set multiple servos at once using a dictionary of {channel: pulse_offset}.
+        Offsets are added to the calibrated base pulse, then clamped to safe ranges.
         """
-        if self.servos is None:
+        if not self.hardware_initialized:
             self.get_logger().warn("Hardware not initialized, simulating servo movement.")
             return
 
-        for channel, angle in angle_dict.items():
-            if channel in self.servos:
-                try:
-                    safe_angle = self.clamp_angle(channel, angle)
-                    self.servos[channel].angle = safe_angle
-                except ValueError:
-                    self.get_logger().error(f"Invalid angle {angle} for servo {channel}")
+        for channel, offset in offset_dict.items():
+            str_chan = str(channel)
+            if str_chan in self.calibrated_pulses:
+                base_pulse = self.calibrated_pulses[str_chan]
+                target_pulse = base_pulse + offset
+                safe_pulse = self.clamp_pulse(channel, target_pulse)
+                duty = self.pulse_to_duty(safe_pulse)
+                self.pca.channels[channel].duty_cycle = duty
 
     def execute_sit(self):
         if self.current_state == "sit":
@@ -125,21 +131,21 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Sit...")
 
-        # Sitting position based on aligned baselines
-        # Baseline is A:135, B:135, C:90
-        # To sit, we might adjust B (Hip Flexion) and C (Knee)
-        # Assuming lowering the knee and extending/flexing hip makes it sit
-        sit_angles = {
+        # Sitting offsets based on calibrated baselines.
+        # Motor A: 0 offset
+        # Motor B: +450 us
+        # Motor C: -600 us
+        sit_offsets = {
             # Front Left
-            0: 135, 1: 200, 2: 30,
+            0: 0, 1: 450, 2: -600,
             # Front Right
-            4: 135, 5: 200, 6: 30,
+            4: 0, 5: 450, 6: -600,
             # Back Left
-            8: 135, 9: 200, 10: 30,
+            8: 0, 9: 450, 10: -600,
             # Back Right
-            12: 135, 13: 200, 14: 30
+            12: 0, 13: 450, 14: -600
         }
-        self.set_servos(sit_angles)
+        self.set_servos(sit_offsets)
 
         time.sleep(2) # Give it time to physically move
         self.current_state = "sit"
@@ -153,18 +159,9 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Stand...")
 
-        # Aligned baseline for standing: A=135, B=135, C=90
-        stand_angles = {
-            # Front Left
-            0: 135, 1: 135, 2: 90,
-            # Front Right
-            4: 135, 5: 135, 6: 90,
-            # Back Left
-            8: 135, 9: 135, 10: 90,
-            # Back Right
-            12: 135, 13: 135, 14: 90
-        }
-        self.set_servos(stand_angles)
+        # Aligned baseline for standing. Since calibrated pulse IS the baseline, offsets are 0.
+        stand_offsets = {c: 0 for c in [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]}
+        self.set_servos(stand_offsets)
 
         time.sleep(2) # Give it time to physically move
         self.current_state = "stand"
@@ -178,44 +175,45 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Walk (10 steps)...")
 
-        # Basic placeholder gait around new baselines [135, 135, 90]
+        # Basic placeholder gait using pulse offsets
         for step in range(10):
             self.get_logger().info(f"Step {step+1}/10")
 
             # Lift legs 1 (Front Left) and 4 (Back Right)
+            # Lift = Motor C (knee) offset -300us
             self.set_servos({
-                # Lift 1 & 4 (Motor C slightly bent)
-                0: 135, 1: 135, 2: 60,
-                4: 135, 5: 135, 6: 90,
-                8: 135, 9: 135, 10: 90,
-                12: 135, 13: 135, 14: 60
+                0: 0, 1: 0, 2: -300,
+                4: 0, 5: 0, 6: 0,
+                8: 0, 9: 0, 10: 0,
+                12: 0, 13: 0, 14: -300
             })
             time.sleep(0.2)
 
             # Move 1 & 4 forward (Motor B adjusted)
+            # Motor B +200us on one, -200us on the other (opposite sides)
             self.set_servos({
-                0: 135, 1: 155, 2: 90,
-                4: 135, 5: 135, 6: 90,
-                8: 135, 9: 135, 10: 90,
-                12: 135, 13: 115, 14: 90
+                0: 0, 1: 200, 2: 0,
+                4: 0, 5: 0, 6: 0,
+                8: 0, 9: 0, 10: 0,
+                12: 0, 13: -200, 14: 0
             })
             time.sleep(0.2)
 
             # Lift legs 2 (Front Right) and 3 (Back Left)
             self.set_servos({
-                0: 135, 1: 135, 2: 90,
-                4: 135, 5: 135, 6: 60,
-                8: 135, 9: 135, 10: 60,
-                12: 135, 13: 135, 14: 90
+                0: 0, 1: 0, 2: 0,
+                4: 0, 5: 0, 6: -300,
+                8: 0, 9: 0, 10: -300,
+                12: 0, 13: 0, 14: 0
             })
             time.sleep(0.2)
 
             # Move 2 & 3 forward
             self.set_servos({
-                0: 135, 1: 135, 2: 90,
-                4: 135, 5: 155, 6: 90,
-                8: 135, 9: 115, 10: 90,
-                12: 135, 13: 135, 14: 90
+                0: 0, 1: 0, 2: 0,
+                4: 0, 5: 200, 6: 0,
+                8: 0, 9: -200, 10: 0,
+                12: 0, 13: 0, 14: 0
             })
             time.sleep(0.2)
 
@@ -235,31 +233,31 @@ class RobotControlNode(Node):
         # Turn right rotates 90 deg about vertical axis.
         # This typically involves lifting legs and using Motor A (sideways movement)
 
-        # Step 1: Lift diagonal pair 1 (FL) & 4 (BR) and rotate A
+        # Step 1: Lift diagonal pair 1 (FL) & 4 (BR) and rotate A using offsets
         self.set_servos({
-            # Lift (reduce C) and rotate (adjust A)
-            0: 165, 1: 135, 2: 60,   # FL
-            4: 135, 5: 135, 6: 90,   # FR
-            8: 135, 9: 135, 10: 90,  # BL
-            12: 105, 13: 135, 14: 60 # BR
+            # Lift (C: -300) and rotate (A: +/- 300)
+            0: 300, 1: 0, 2: -300,   # FL
+            4: 0, 5: 0, 6: 0,        # FR
+            8: 0, 9: 0, 10: 0,       # BL
+            12: -300, 13: 0, 14: -300 # BR
         })
         time.sleep(0.3)
 
         # Step 2: Put down pair 1 & 4
         self.set_servos({
-            0: 165, 1: 135, 2: 90,
-            4: 135, 5: 135, 6: 90,
-            8: 135, 9: 135, 10: 90,
-            12: 105, 13: 135, 14: 90
+            0: 300, 1: 0, 2: 0,
+            4: 0, 5: 0, 6: 0,
+            8: 0, 9: 0, 10: 0,
+            12: -300, 13: 0, 14: 0
         })
         time.sleep(0.3)
 
         # Step 3: Lift diagonal pair 2 (FR) & 3 (BL) and rotate A to match, while restoring A for 1 & 4
         self.set_servos({
-            0: 135, 1: 135, 2: 90,   # FL restored
-            4: 105, 5: 135, 6: 60,   # FR lifted and rotated
-            8: 165, 9: 135, 10: 60,  # BL lifted and rotated
-            12: 135, 13: 135, 14: 90 # BR restored
+            0: 0, 1: 0, 2: 0,         # FL restored
+            4: -300, 5: 0, 6: -300,   # FR lifted and rotated
+            8: 300, 9: 0, 10: -300,   # BL lifted and rotated
+            12: 0, 13: 0, 14: 0       # BR restored
         })
         time.sleep(0.3)
 

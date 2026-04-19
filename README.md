@@ -91,6 +91,24 @@ colcon build --packages-select nova_spot_control
 source install/setup.bash
 ```
 
+### 7. Motor Calibration (Highly Recommended)
+Before executing walking or sitting motions, you should calibrate the "resting" pulse value for each of the 12 motors to ensure precise alignment.
+The default expected resting pulse for perfect alignment (A: 135°, B: 135°, C: 90°) is 1500µs. Since mechanical linkages and servo splines vary, use the calibration node to fine-tune this resting state.
+
+Run the calibration node (make sure the robot control node is NOT running):
+```bash
+ros2 run nova_spot_control motor_calibration_node
+```
+
+**Calibration Instructions:**
+1. Type a channel number (e.g., `0` for Front Left Motor A) and hit Enter.
+2. The servo will move to its currently stored calibration pulse (default 1500µs).
+3. Type `+` to increase the pulse by 10µs, or `-` to decrease it, or enter an exact microsecond value (e.g., `1530`) to find the perfect mechanical alignment. Type `b` to go back to channel selection.
+4. Once all motors are physically aligned (A and B at exactly 135°, C at exactly 90°), type `q` to quit.
+5. This saves your custom resting pulses to `~/.nova_spot_calibration.json`.
+
+*Note: The `robot_control_node` automatically loads these calibrated values on startup. All subsequent movements (sit, walk, turn) are executed as relative pulse offsets from this highly precise calibrated baseline.*
+
 ## Running the Code
 
 Execute the launch file to start both the voice recognition and robot control nodes:
@@ -100,9 +118,9 @@ ros2 launch nova_spot_control nova_spot_launch.py
 
 ### Usage
 Once launched, the microphone will continuously listen. Speak one of the following commands clearly:
-- **"Sit"**: The robot adjusts its base joints from the baseline alignment to sit down.
-- **"Stand"**: The robot assumes its perfectly aligned baseline position: Motor A at 135°, Motor B at 135°, and Motor C at 90°.
-- **"Walk"**: The robot will walk 10 steps forward using a basic gait built around the aligned baseline (requires standing first).
+- **"Sit"**: The robot applies a relative pulse offset to bend its knees and adjust hips to sit down.
+- **"Stand"**: The robot returns to your saved calibrated resting pulse baseline.
+- **"Walk"**: The robot walks 10 steps forward using a pulse-offset gait (requires standing first).
 - **"Turn right"**: The robot rotates 90 degrees about the vertical axis (requires standing first).
 
 While a command is executing, the microphone goes inactive to prevent self-interruption. Once the movement completes and after a short buffer time, the robot will resume listening for new commands.
