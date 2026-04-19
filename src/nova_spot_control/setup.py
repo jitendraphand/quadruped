@@ -24,7 +24,8 @@ setup(
     entry_points={
         'console_scripts': [
             'voice_command_node = nova_spot_control.voice_command_node:main',
-            'robot_control_node = nova_spot_control.robot_control_node:main'
+            'robot_control_node = nova_spot_control.robot_control_node:main',
+            'motor_calibration_node = nova_spot_control.motor_calibration_node:main'
         ],
     },
 )
