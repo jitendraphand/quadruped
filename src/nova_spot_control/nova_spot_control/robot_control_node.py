@@ -42,10 +42,14 @@ class RobotControlNode(Node):
             self.load_calibration()
             self.hardware_initialized = True
 
+            # Track current offsets to allow smooth interpolation
+            self.current_offsets = {c: 0 for c in [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]}
+
             self.get_logger().info("Hardware initialized successfully.")
         except Exception as e:
             self.get_logger().error(f"Failed to initialize hardware: {e}")
             self.hardware_initialized = False
+            self.current_offsets = {c: 0 for c in [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]}
 
         # State tracking
         self.current_state = "stand"  # Assume starting standing or seated, need to track to avoid redundant moves
@@ -64,6 +68,8 @@ class RobotControlNode(Node):
             self.execute_walk()
         elif command == "turn right":
             self.execute_turn_right()
+        elif command == "wave":
+            self.execute_wave()
         else:
             self.get_logger().warn(f"Unknown command: {command}")
 
@@ -101,8 +107,8 @@ class RobotControlNode(Node):
             return max(1000, min(2000, pulse_us))
         elif channel in [1, 5, 9, 13]:  # Motor B: 1000 - 2000 us
             return max(1000, min(2000, pulse_us))
-        elif channel in [2, 6, 10, 14]:  # Motor C: 1100 - 1900 us (roughly +/- 60 deg from center)
-            return max(1100, min(1900, pulse_us))
+        elif channel in [2, 6, 10, 14]:  # Motor C: 1000 - 2000 us
+            return max(1000, min(2000, pulse_us))
         return pulse_us
 
     def set_servos(self, offset_dict):
@@ -110,6 +116,9 @@ class RobotControlNode(Node):
         Set multiple servos at once using a dictionary of {channel: pulse_offset}.
         Offsets are added to the calibrated base pulse, then clamped to safe ranges.
         """
+        for channel, offset in offset_dict.items():
+            self.current_offsets[channel] = offset
+
         if not self.hardware_initialized:
             self.get_logger().warn("Hardware not initialized, simulating servo movement.")
             return
@@ -123,6 +132,24 @@ class RobotControlNode(Node):
                 duty = self.pulse_to_duty(safe_pulse)
                 self.pca.channels[channel].duty_cycle = duty
 
+    def set_servos_smooth(self, target_offsets, duration=0.5, steps=20):
+        """
+        Smoothly interpolate servos from current offsets to target_offsets over duration.
+        """
+        if not target_offsets:
+            return
+
+        start_offsets = {ch: self.current_offsets.get(ch, 0) for ch in target_offsets.keys()}
+        sleep_time = duration / steps
+
+        for step in range(1, steps + 1):
+            fraction = step / steps
+            interp_offsets = {}
+            for ch in target_offsets.keys():
+                interp_offsets[ch] = start_offsets[ch] + (target_offsets[ch] - start_offsets[ch]) * fraction
+            self.set_servos(interp_offsets)
+            time.sleep(sleep_time)
+
     def execute_sit(self):
         if self.current_state == "sit":
             self.get_logger().info("Already sitting.")
@@ -131,23 +158,22 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Sit...")
 
-        # Sitting offsets based on calibrated baselines.
+        # Sitting offsets: bend all legs backward at the knee
         # Motor A: 0 offset
         # Motor B: +450 us
-        # Motor C: -600 us
+        # Motor C: +500 us (bending backward at the knee)
         sit_offsets = {
             # Front Left
-            0: 0, 1: 450, 2: -600,
+            0: 0, 1: 450, 2: 500,
             # Front Right
-            4: 0, 5: 450, 6: -600,
+            4: 0, 5: 450, 6: 500,
             # Back Left
-            8: 0, 9: 450, 10: -600,
+            8: 0, 9: 450, 10: 500,
             # Back Right
-            12: 0, 13: 450, 14: -600
+            12: 0, 13: 450, 14: 500
         }
-        self.set_servos(sit_offsets)
+        self.set_servos_smooth(sit_offsets, duration=1.0)
 
-        time.sleep(2) # Give it time to physically move
         self.current_state = "sit"
         self.get_logger().info("Sit completed.")
 
@@ -159,11 +185,16 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Stand...")
 
-        # Aligned baseline for standing. Since calibrated pulse IS the baseline, offsets are 0.
-        stand_offsets = {c: 0 for c in [0, 1, 2, 4, 5, 6, 8, 9, 10, 12, 13, 14]}
-        self.set_servos(stand_offsets)
+        # Standing pose with slight backward bending at the knee (Motor C)
+        # Motor A: 0, Motor B: 0, Motor C: +150
+        stand_offsets = {
+            0: 0, 1: 0, 2: 150,
+            4: 0, 5: 0, 6: 150,
+            8: 0, 9: 0, 10: 150,
+            12: 0, 13: 0, 14: 150
+        }
+        self.set_servos_smooth(stand_offsets, duration=1.0)
 
-        time.sleep(2) # Give it time to physically move
         self.current_state = "stand"
         self.get_logger().info("Stand completed.")
 
@@ -175,47 +206,53 @@ class RobotControlNode(Node):
 
         self.get_logger().info("Executing Walk (10 steps)...")
 
-        # Basic placeholder gait using pulse offsets
+        # Lower body while walking by adding constant +250 us offset to knee (Motor C)
+        # B offsets reduced from +/- 200 to +/- 100 for smaller steps
+        knee_base = 250
+        lift_offset = -150  # relative to knee_base, so C goes to 100 to lift slightly
+
+        # Transition smoothly to the lower walk-ready stance before starting the loop
+        self.set_servos_smooth({
+            0: 0, 1: 0, 2: knee_base,
+            4: 0, 5: 0, 6: knee_base,
+            8: 0, 9: 0, 10: knee_base,
+            12: 0, 13: 0, 14: knee_base
+        }, duration=0.5)
+
         for step in range(10):
             self.get_logger().info(f"Step {step+1}/10")
 
             # Lift legs 1 (Front Left) and 4 (Back Right)
-            # Lift = Motor C (knee) offset -300us
-            self.set_servos({
-                0: 0, 1: 0, 2: -300,
-                4: 0, 5: 0, 6: 0,
-                8: 0, 9: 0, 10: 0,
-                12: 0, 13: 0, 14: -300
-            })
-            time.sleep(0.2)
+            self.set_servos_smooth({
+                0: 0, 1: 0, 2: knee_base + lift_offset,
+                4: 0, 5: 0, 6: knee_base,
+                8: 0, 9: 0, 10: knee_base,
+                12: 0, 13: 0, 14: knee_base + lift_offset
+            }, duration=0.15)
 
-            # Move 1 & 4 forward (Motor B adjusted)
-            # Motor B +200us on one, -200us on the other (opposite sides)
-            self.set_servos({
-                0: 0, 1: 200, 2: 0,
-                4: 0, 5: 0, 6: 0,
-                8: 0, 9: 0, 10: 0,
-                12: 0, 13: -200, 14: 0
-            })
-            time.sleep(0.2)
+            # Move 1 & 4 forward (Motor B +/- 100 for small steps)
+            self.set_servos_smooth({
+                0: 0, 1: 100, 2: knee_base,
+                4: 0, 5: 0, 6: knee_base,
+                8: 0, 9: 0, 10: knee_base,
+                12: 0, 13: -100, 14: knee_base
+            }, duration=0.15)
 
             # Lift legs 2 (Front Right) and 3 (Back Left)
-            self.set_servos({
-                0: 0, 1: 0, 2: 0,
-                4: 0, 5: 0, 6: -300,
-                8: 0, 9: 0, 10: -300,
-                12: 0, 13: 0, 14: 0
-            })
-            time.sleep(0.2)
+            self.set_servos_smooth({
+                0: 0, 1: 0, 2: knee_base,
+                4: 0, 5: 0, 6: knee_base + lift_offset,
+                8: 0, 9: 0, 10: knee_base + lift_offset,
+                12: 0, 13: 0, 14: knee_base
+            }, duration=0.15)
 
             # Move 2 & 3 forward
-            self.set_servos({
-                0: 0, 1: 0, 2: 0,
-                4: 0, 5: 200, 6: 0,
-                8: 0, 9: -200, 10: 0,
-                12: 0, 13: 0, 14: 0
-            })
-            time.sleep(0.2)
+            self.set_servos_smooth({
+                0: 0, 1: 0, 2: knee_base,
+                4: 0, 5: 100, 6: knee_base,
+                8: 0, 9: -100, 10: knee_base,
+                12: 0, 13: 0, 14: knee_base
+            }, duration=0.15)
 
         # Return to neutral stand
         self.execute_stand()
@@ -234,36 +271,70 @@ class RobotControlNode(Node):
         # This typically involves lifting legs and using Motor A (sideways movement)
 
         # Step 1: Lift diagonal pair 1 (FL) & 4 (BR) and rotate A using offsets
-        self.set_servos({
-            # Lift (C: -300) and rotate (A: +/- 300)
-            0: 300, 1: 0, 2: -300,   # FL
-            4: 0, 5: 0, 6: 0,        # FR
-            8: 0, 9: 0, 10: 0,       # BL
-            12: -300, 13: 0, 14: -300 # BR
-        })
-        time.sleep(0.3)
+        self.set_servos_smooth({
+            # Lift (C: -300 relative to baseline) and rotate (A: +/- 300)
+            0: 300, 1: 0, 2: -150,   # FL (lift is C -300 from +150 stand offset -> -150)
+            4: 0, 5: 0, 6: 150,      # FR (stay at stand)
+            8: 0, 9: 0, 10: 150,     # BL (stay at stand)
+            12: -300, 13: 0, 14: -150 # BR
+        }, duration=0.3)
 
         # Step 2: Put down pair 1 & 4
-        self.set_servos({
-            0: 300, 1: 0, 2: 0,
-            4: 0, 5: 0, 6: 0,
-            8: 0, 9: 0, 10: 0,
-            12: -300, 13: 0, 14: 0
-        })
-        time.sleep(0.3)
+        self.set_servos_smooth({
+            0: 300, 1: 0, 2: 150,
+            4: 0, 5: 0, 6: 150,
+            8: 0, 9: 0, 10: 150,
+            12: -300, 13: 0, 14: 150
+        }, duration=0.3)
 
         # Step 3: Lift diagonal pair 2 (FR) & 3 (BL) and rotate A to match, while restoring A for 1 & 4
-        self.set_servos({
-            0: 0, 1: 0, 2: 0,         # FL restored
-            4: -300, 5: 0, 6: -300,   # FR lifted and rotated
-            8: 300, 9: 0, 10: -300,   # BL lifted and rotated
-            12: 0, 13: 0, 14: 0       # BR restored
-        })
-        time.sleep(0.3)
+        self.set_servos_smooth({
+            0: 0, 1: 0, 2: 150,         # FL restored
+            4: -300, 5: 0, 6: -150,     # FR lifted and rotated
+            8: 300, 9: 0, 10: -150,     # BL lifted and rotated
+            12: 0, 13: 0, 14: 150       # BR restored
+        }, duration=0.3)
 
         # Step 4: Put down pair 2 & 3 and restore A back to baseline to complete the turn
         self.execute_stand()
         self.get_logger().info("Turn Right completed.")
+
+    def execute_wave(self):
+        if self.current_state != "stand":
+            self.get_logger().info("Must stand first to wave. Standing up...")
+            self.execute_stand()
+            time.sleep(1)
+
+        self.get_logger().info("Executing Wave...")
+
+        # Lift forward right leg (Motor C on FR is channel 6, Motor B is 5, Motor A is 4)
+        # FR mapping: A(4), B(5), C(6)
+
+        # Lift the leg and move it forward slightly
+        self.set_servos_smooth({
+            4: 0, 5: 200, 6: -300
+        }, duration=0.5)
+
+        # Wave a few times (move inward and outward using Motor A)
+        for _ in range(3):
+            # Move outward
+            self.set_servos_smooth({
+                4: 300, 5: 200, 6: -300
+            }, duration=0.3)
+            # Move inward
+            self.set_servos_smooth({
+                4: -300, 5: 200, 6: -300
+            }, duration=0.3)
+
+        # Move back to center lift position
+        self.set_servos_smooth({
+            4: 0, 5: 200, 6: -300
+        }, duration=0.3)
+
+        # Return to stand
+        self.execute_stand()
+        self.get_logger().info("Wave completed.")
+
 
 def main(args=None):
     rclpy.init(args=args)
