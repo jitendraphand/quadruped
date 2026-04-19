@@ -24,7 +24,7 @@ class VoiceCommandNode(Node):
         self.recognizer = sr.Recognizer()
 
         # Valid commands
-        self.valid_commands = ["sit", "stand", "walk", "turn right"]
+        self.valid_commands = ["sit", "stand", "walk", "turn right", "wave"]
 
         # Publisher to send the detected command
         self.command_publisher = self.create_publisher(String, 'robot_command', 10)

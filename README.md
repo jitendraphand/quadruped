@@ -24,9 +24,9 @@ This is a ROS 2 Jazzy workspace to control a Nova Mini Spot quadruped robot usin
 Connect the 12 servos to the PCA9685 board based on the motor types.
 
 Each leg has three motors:
-- **Motor A (Hip Abduction & Adduction):** Moves leg sideways. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg (allowed range +/- 67.5 deg).
-- **Motor B (Hip Flexion/Extension):** Moves leg forward/back. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg (allowed range +/- 67.5 deg).
-- **Motor C (Knee Bending):** Rotation angle 180 deg (pulse 900-2100 µs). Perfectly aligned at 90 deg (allowed range +/- 60 deg).
+- **Motor A (Hip Abduction & Adduction):** Moves leg sideways. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg. Hardware clamped range: 1000-2000 µs.
+- **Motor B (Hip Flexion/Extension):** Moves leg forward/back. Rotation angle 270 deg (pulse 500-2500 µs). Perfectly aligned at 135 deg. Hardware clamped range: 1000-2000 µs.
+- **Motor C (Knee Bending):** Rotation angle 180 deg (pulse 900-2100 µs). Perfectly aligned at 90 deg. Hardware clamped range: 1000-2000 µs.
 
 **PCA9685 Channel Mapping:**
 - **Front Left Leg:** Motor A (0), Motor B (1), Motor C (2)
@@ -118,9 +118,12 @@ ros2 launch nova_spot_control nova_spot_launch.py
 
 ### Usage
 Once launched, the microphone will continuously listen. Speak one of the following commands clearly:
-- **"Sit"**: The robot applies a relative pulse offset to bend its knees and adjust hips to sit down.
-- **"Stand"**: The robot returns to your saved calibrated resting pulse baseline.
-- **"Walk"**: The robot walks 10 steps forward using a pulse-offset gait (requires standing first).
+- **"Sit"**: The robot bends all legs backward at the knee to lower itself.
+- **"Stand"**: The robot returns to a standing position with a slight bend at the knees.
+- **"Walk"**: The robot walks 10 steps forward using a pulse-offset gait, lowering its body slightly for stability (requires standing first).
 - **"Turn right"**: The robot rotates 90 degrees about the vertical axis (requires standing first).
+- **"Wave"**: The robot lifts its front right leg and waves it inward and outward (requires standing first).
+
+All motor movements use a smooth interpolation algorithm to ensure fluid motions and prevent sudden jerks or jitters.
 
 While a command is executing, the microphone goes inactive to prevent self-interruption. Once the movement completes and after a short buffer time, the robot will resume listening for new commands.
